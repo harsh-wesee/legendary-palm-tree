@@ -127,6 +127,27 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
     });
 };
 
+const searchNumberInDB = (socket, phoneNumber) => {
+    const query = "SELECT * FROM Users WHERE mobile_number LIKE ?";
+    const values = [`%${phoneNumber}`];
+    console.log("Query: ", query);
+    console.log("Values:", values);
+    connection.query(query, values, (err, results) => {
+        if (err) {
+            console.error("Error in finding phone number:", err);
+            socket.emit("phone-error", "Failed to find phone number");
+            return;
+        }
+        if (results.length === 0) {
+            socket.emit("user-exists-response", { contactNumber: phoneNumber, exists: false });
+            return;
+        }
+        else {
+            socket.emit("user-exists-response", { contactNumber: phoneNumber, exists: true });
+        }
+    });
+}
+
 // Image Download Endpoint
 app.get('/download/:folder/:filename', (req, res) => {
     const { folder, filename } = req.params;
@@ -196,11 +217,16 @@ io.on("connection", (socket) => {
         // console.log(clients[id]);
     });
 
+    socket.on("get-contacts", (data) => {
+        console.log("Phone Number: ", data.phoneNumber);
+        searchNumberInDB(socket, data.phoneNumber);
+    });
+
     socket.on("message", (msg) => {
         console.log("Message Received:", msg);
 
         let targetId = msg.targetid;
-        console.log("target id: ", clients[targetId]);
+        console.log("target id: ", targetId);
         if(targetId) 
         {
             clients[targetId].emit("message", msg);
