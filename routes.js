@@ -27,7 +27,9 @@ const storage = multer.diskStorage({
             folder = './others';
         }
         console.log("Folder", folder);
-        cb(null, folder);
+        req.uploadFolder = folder;
+        cb(null, path.join(__dirname, folder));
+        // cb(null, folder);
     },
     filename:(req, file, cb) => {
         const ext = path.extname(file.originalname);
@@ -43,10 +45,11 @@ const upload = multer({
 router.post("/addimage", upload.single("img"), (req, res) => {
     try{
         const filePath = req.file.filename;
+        const folder = req.uploadFolder;
         res.json({
             path: filePath,
             // path: req.file.filename
-            url: `/download/${filePath}`
+            url: `/download/${folder}/${filePath}`
         });
     }
     catch(e)
@@ -58,9 +61,10 @@ router.post("/addimage", upload.single("img"), (req, res) => {
 router.post("/adddocument", upload.single("doc"), async (req, res) => {
     try {
         const filePath = req.file.filename;
+        const folder = req.uploadFolder;
         res.json({
             path: filePath,
-            url: `/download/${filePath}`
+            url: `/download/${folder}/${filePath}`
         });
     }
     catch (e)
@@ -72,9 +76,10 @@ router.post("/adddocument", upload.single("doc"), async (req, res) => {
 router.post("/addaudio", upload.single("file"), (req, res) => {
     try {
         const filePath = req.file.filename;
+        const folder = req.uploadFolder;
         res.json({
             path: filePath,
-            url: `/download/${filePath}`
+            url: `/download/${folder}/${filePath}`
         });
     }
     catch (e)
@@ -86,9 +91,10 @@ router.post("/addaudio", upload.single("file"), (req, res) => {
 router.post("/addothers", upload.single("file"), (req, res) => {
     try {
         const filePath = req.file.filename;
+        const folder = req.uploadFolder;
         res.json({
             path: filePath,
-            url: `/download/${filePath}`
+            url: `/download/${folder}/${filePath}`
         });
     }
     catch (e)

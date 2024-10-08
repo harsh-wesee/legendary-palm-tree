@@ -32,6 +32,32 @@ app.get("/users", (req, res) => {
     res.json({ users });
 });
 
+app.post('/message/:messageId/reaction', (req, res) => {
+    const { messageId } = req.params;
+    const { userId, reactionType } = req.body;
+
+    const query = `INSERT INTO MessageReaction (message_id, user_id, reaction_type) VALUES (?, ?, ?)`;
+    db.query(query, [messageId, userId, reactionType], (err, result) => {
+        if (err) {
+            return res.status(500).send('Error adding reaction');
+        }
+        res.status(201).send('Reaction added');
+    });
+});
+
+app.delete('/message/:messageId/reaction', (req, res) => {
+    const { messageId } = req.params;
+    const { userId } = req.body;
+
+    const query = `DELETE FROM MessageReaction WHERE message_id = ? AND user_id = ?`;
+    db.query(query, [messageId, userId], (err, result) => {
+        if (err) {
+            return res.status(500).send('Error removing reaction');
+        }
+        res.status(200).send('Reaction removed');
+    });
+});
+
 
 const generateOtp = () => {
     return otpGen.generate(6, {
@@ -130,7 +156,7 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
 const searchNumberInDB = (socket, phoneNumber) => {
     const query = "SELECT * FROM Users WHERE mobile_number LIKE ?";
     const values = [`%${phoneNumber}`];
-    console.log("Query: ", query);
+    // console.log("Query: ", query);
     console.log("Values:", values);
     connection.query(query, values, (err, results) => {
         if (err) {
@@ -138,7 +164,7 @@ const searchNumberInDB = (socket, phoneNumber) => {
             socket.emit("phone-error", "Failed to find phone number");
             return;
         }
-        if (results.length === 0) {
+        else if (results.length === 0) {
             socket.emit("user-exists-response", { contactNumber: phoneNumber, exists: false });
             return;
         }
@@ -231,8 +257,25 @@ io.on("connection", (socket) => {
         {
             clients[targetId].emit("message", msg);
         }
+        console.log(users);
+        receiver = clients[targetId].id;
+        sender = clients[msg.sourceid].id
+        setTimeout(() => insertMessage(msg, receiver, sender), 1000);
+        // insertMessage(msg, receiver, sender);
 
-        insertMessage(msg);
+    });
+
+    socket.on("voice-note", (data) => {
+        console.log("Message Received for voice note: ", data.data);
+        console.log("Sender: ", data.sourceid);
+        console.log("Receiver: ", data.targetid);
+        targetId = data.targetid;
+        if(targetId) 
+        {
+            clients[targetId].emit("voice-note", { data: data.data, sender: data.sourceid, receiver: data.targetid});
+            console.log("Sent!!");
+        }
+
     });
 
     // Listen for the user authentication or data setting
@@ -240,6 +283,33 @@ io.on("connection", (socket) => {
         // Store user information with the socket ID
         users[socket.id] = userData;
         console.log('User data set for socket', socket.id, ':', userData);
+    });
+
+    socket.on('delete-message-for-everyone', (data) => {
+        console.log(data.targetId);
+        console.log(typeof data.targetId);
+        console.log("messageId: ", data.serverMessageId);
+        // console.log("Users: ", users);
+        receiver = findSocketIdByUserId(users, String(data.targetId));
+        console.log(receiver);
+        if(receiver) {
+            io.to(receiver).emit("delete-message-for-everyone", { sourceId: String(data.sourceId), targetId: String(data.targetId), serverMessageId: String(data.serverMessageId) });
+            console.log("Sent");
+        } else {
+            console.log("There is an error");
+        }
+    });
+
+    // Message reaction
+    socket.on("message-reaction", (data) => {
+        console.log("Message id is: ", data.messageId);
+        console.log("The reaction is: ", data.emoji);
+        targetId = data.targetId;
+        if(targetId) {
+            clients[targetId].emit("message-reaction", {messageId: data.messageId, emoji: data.emoji, sourceId: data.sourceId, targetId: data.targetId});
+            console.log("Sent");
+        }
+        insertReactionInDB(data.messageId, data.sourceId, data.emoji);
     });
 
     // When we get a call to start a call
@@ -366,7 +436,7 @@ function findClientIdBySocketId(socketId, clients) {
     let foundId = null;
 
     for (const id in clients) {
-        if (clients[id].id === socketId) {  // Check if the stored socket's id matches the socketId
+        if (clients[id].id === socketId) {
             foundId = id;
             break;
         }
@@ -376,13 +446,26 @@ function findClientIdBySocketId(socketId, clients) {
 }
   
 
-const insertMessage = (msg) => {
+const insertReactionInDB = (messageId, userId, reaction) => {
+    const insertReactionQuery = "INSERT INTO MessageReaction (message_id, user_id, reaction_type) VALUES (?, ?, ?);";
+    const insertReactionValues = [messageId, userId, reaction];
+
+    connection.query(insertReactionQuery, insertReactionValues, (err, results) => {
+        if(err) {
+            return connection.rollback(() => {
+                console.error("Error inserting in the reaction table", err);
+            });
+        }
+        console.log("Reaction Inserted with Id:", results.insertId);
+    })
+}
+
+const insertMessage = (msg, receiver, sender) => {
     connection.beginTransaction((err) => {
         if(err) {
             console.error("Transaction error:", err);
             return;
         }
-
         const checkChatQuery = "SELECT chat_id FROM Chats WHERE (user_one_id = ? AND user_two_id = ?) OR (user_one_id = ? AND user_two_id = ?) LIMIT 1;";
         const checkChatValues = [msg.sourceid, msg.targetid, msg.targetid, msg.sourceid];
 
@@ -400,7 +483,7 @@ const insertMessage = (msg) => {
             if(results.length > 0) {
                 chatId = results[0].chat_id;
                 console.log("Chat already exist. chat_id:", chatId);
-                insertMessageEntry(chatId);
+                insertMessageEntry(chatId, receiver, sender);
             }
             else
             {
@@ -419,13 +502,13 @@ const insertMessage = (msg) => {
 
                     chatId = result.insertId;
                     console.log("New Chat Inserted. chat_id:", chatId);
-                    insertMessageEntry(chatId);
+                    insertMessageEntry(chatId, receiver, sender);
                 });
             }
         });
     });
 
-    const insertMessageEntry = (chatId) => {
+    const insertMessageEntry = (chatId, receiver, sender) => {
         if(!msg) {
             console.error("No message data available");
             return;
@@ -444,8 +527,8 @@ const insertMessage = (msg) => {
             //     messageType = 'video';
             } else if (['.mp3', '.wav', '.aac'].includes(fileExtension)) {
                 messageType = 'audio';
-            // } else if (['pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(fileExtension)) {
-            //     messageType = 'file';
+            } else if (['.pdf', '.doc', '.docx', '.xls', '.xlsx'].includes(fileExtension)) {
+                messageType = 'file';
             } else {
                 messageType = 'unknown'; // Fallback for unsupported types
             }
@@ -467,7 +550,19 @@ const insertMessage = (msg) => {
                 });
             }
 
+            console.log("Sender: ", sender);
+            console.log("Receiver: ", receiver);
             const messageId = result.insertId;
+            if(receiver) {
+                io.to(receiver).emit("message-id", { messageId: messageId });
+                console.log("Emitted to receiver");
+            }
+            if(sender) {
+                io.to(sender).emit("message-id", { messageId: messageId });
+                console.log("Emitted to Sender");
+            }
+            
+            
 
             const updateChatQuery = "UPDATE Chats SET last_message_id = ?, last_message_time = ? WHERE chat_id = ?";
             const updateChatValues = [messageId, new Date(), chatId];
