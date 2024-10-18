@@ -129,26 +129,27 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
             }
 
             // Add the user to the Users table
+            //Execute these lines for making the entry of the user in the DB
             const insertUserQuery = "INSERT INTO Users (mobile_number, username, profile_picture, status, last_seen, is_online) VALUES (?, NULL, NULL, FALSE, NULL, FALSE)";
             const insertUserValues = [phoneNumber];
 
-            connection.query(insertUserQuery, insertUserValues, (err, result) => {
-                if (err) {
-                    console.error("Error inserting user:", err);
-                    socket.emit("otpError", "Failed to create user");
-                    return;
-                }
+            // connection.query(insertUserQuery, insertUserValues, (err, result) => {
+            //     if (err) {
+            //         console.error("Error inserting user:", err);
+            //         socket.emit("otpError", "Failed to create user");
+            //         return;
+            //     }
 
                 socket.emit("otpSuccess", "User verified and added successfully");
 
                 // Delete OTP after successful verification
-                const deleteOtpQuery = "DELETE FROM UserOTPs WHERE mobile_number = ? AND otp = ?";
-                connection.query(deleteOtpQuery, values, (err) => {
-                    if (err) {
-                        console.error("Error deleting OTP record:", err);
-                    }
-                });
-            });
+                // const deleteOtpQuery = "DELETE FROM UserOTPs WHERE mobile_number = ? AND otp = ?";
+                // connection.query(deleteOtpQuery, values, (err) => {
+                    // if (err) {
+                        // console.error("Error deleting OTP record:", err);
+                    // }
+                // });
+            // });
         });
     });
 };
@@ -173,6 +174,23 @@ const searchNumberInDB = (socket, phoneNumber) => {
         }
     });
 }
+
+const storeIdentitKeyInDB = (number, identityKey, registrationId, signedPreKeyId, signedPreKey, preKeys) => {
+    const query = "UPDATE Users SET identity_key = ?, registration_id = ?, signed_pre_key_id = ?, signed_pre_key = ? WHERE mobile_number = ?";
+    const values = [identityKey, registrationId, signedPreKeyId, signedPreKey, number];
+
+    console.log(values);
+    connection.query(query, values, (err, results) => {
+        if (err) {
+            console.error("Error in adding identity key:", err);
+            return;
+        }
+        else {
+            console.log("Keys are added to the db successfully.");
+        }
+    });
+}
+
 
 // Image Download Endpoint
 app.get('/download/:folder/:filename', (req, res) => {
@@ -235,7 +253,21 @@ io.on("connection", (socket) => {
             return;
         }
         verifyOtpInDB(socket, phoneNumber, otp);
-    })
+    });
+
+    socket.on("keys", (data) => {
+        console.log("Public identity key: ", data.publicIdentityKey);
+        console.log("User: ", data.number);
+        console.log("Registration Id: ", data.registrationId);
+        console.log("Signed pre key id: ", data.signedPreKeyId);
+        console.log("Signed pre key: ", data.signedPreKey);
+        console.log("Pre keys: ", data.preKeys);
+        storeIdentitKeyInDB(data.number, data.publicIdentityKey, data.registrationId, data.signedPreKeyId, data.signedPreKey, data.preKeys);
+    });
+
+    socket.on("register-keys", (data) => {
+        // console.log("Data: ", data);
+    });
 
     socket.on("signin", (id)=>{
         console.log(id);
@@ -302,6 +334,7 @@ io.on("connection", (socket) => {
 
     // Message reaction
     socket.on("message-reaction", (data) => {
+        console.log("message-reaction called")
         console.log("Message id is: ", data.messageId);
         console.log("The reaction is: ", data.emoji);
         targetId = data.targetId;
@@ -314,7 +347,6 @@ io.on("connection", (socket) => {
 
     // When we get a call to start a call
     socket.on("start-call", (data) => {
-        socket.join(data.roomId);
         console.log(data.roomId);
         receiver = findSocketIdByUserId(users, data.to);
         // console.log(`Socket ID: ${socket.id}, Initiating call request to ${receiver} and the calltype is ${data.isVideoCall}`);
@@ -359,6 +391,21 @@ io.on("connection", (socket) => {
         console.log("Call rejected by ", socket.user, " from ", to);
         io.to(to).emit("call-denied", { to });
     });
+
+    socket.on("disconnect-call", (data) => {
+        console.log("Ok disconnect");
+        other_user = findSocketIdByUserId(users, String(data.to));
+        console.log(other_user);
+        io.to(other_user).emit("disconnect-call", {from: socket.id});
+
+    });
+
+    // socket.on("request-video-call", (data) => {
+    //     console.log("Video call switch");
+    //     other_user = findSocketIdByUserId(users, String(data.to));
+    //     console.log(other_user);
+    //     io.to(other_user).emit("request-video-call", {from: data.from, to: data.to, roomId: data.roomId});
+    // });
 
     // When a party leaves the call
     socket.on("leave-call", ({ to }) => {
