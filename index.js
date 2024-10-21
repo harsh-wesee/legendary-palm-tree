@@ -1,14 +1,14 @@
 const express = require("express");
 var http = require("http");
 const path = require("path");
-const cors =  require("cors");
+const cors = require("cors");
 const app = express();
 const port = process.env.port || 5000;
 var server = http.createServer(app);
 var io = require("socket.io")(server, {
     cors:
     {
-        origin:"*",
+        origin: "*",
         methods: ['GET', 'POST']
     }
 });
@@ -114,15 +114,15 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
         // console.log("Executing Query:", checkUserQuery);
         // console.log("With Values:", checkUserValues);
 
-        
-        
+
+
         connection.query(checkUserQuery, checkUserValues, (err, userResults) => {
             if (err) {
                 console.error("Error checking user existence:", err);
                 socket.emit("otpError", "Failed to check user existence");
                 return;
             }
-            
+
             if (userResults.length > 0) {
                 socket.emit("otpError", "User already registered");
                 return;
@@ -133,23 +133,23 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
             const insertUserQuery = "INSERT INTO Users (mobile_number, username, profile_picture, status, last_seen, is_online) VALUES (?, NULL, NULL, FALSE, NULL, FALSE)";
             const insertUserValues = [phoneNumber];
 
-            // connection.query(insertUserQuery, insertUserValues, (err, result) => {
-            //     if (err) {
-            //         console.error("Error inserting user:", err);
-            //         socket.emit("otpError", "Failed to create user");
-            //         return;
-            //     }
+            connection.query(insertUserQuery, insertUserValues, (err, result) => {
+                if (err) {
+                    console.error("Error inserting user:", err);
+                    socket.emit("otpError", "Failed to create user");
+                    return;
+                }
 
                 socket.emit("otpSuccess", "User verified and added successfully");
 
                 // Delete OTP after successful verification
                 // const deleteOtpQuery = "DELETE FROM UserOTPs WHERE mobile_number = ? AND otp = ?";
                 // connection.query(deleteOtpQuery, values, (err) => {
-                    // if (err) {
-                        // console.error("Error deleting OTP record:", err);
-                    // }
+                // if (err) {
+                // console.error("Error deleting OTP record:", err);
+                // }
                 // });
-            // });
+            });
         });
     });
 };
@@ -175,21 +175,54 @@ const searchNumberInDB = (socket, phoneNumber) => {
     });
 }
 
-const storeIdentitKeyInDB = (number, identityKey, registrationId, signedPreKeyId, signedPreKey, preKeys) => {
-    const query = "UPDATE Users SET identity_key = ?, registration_id = ?, signed_pre_key_id = ?, signed_pre_key = ? WHERE mobile_number = ?";
-    const values = [identityKey, registrationId, signedPreKeyId, signedPreKey, number];
+const storeKeysInDB = (number, identityKey, registrationId, signedPreKeyId, signedPreKey, preKeys) => {
+    const updateUserQuery = `
+        UPDATE Users 
+        SET identity_key = ?, registration_id = ?, signed_pre_key_id = ?, signed_pre_key = ? 
+        WHERE mobile_number = ?`;
 
-    console.log(values);
-    connection.query(query, values, (err, results) => {
+    const updateValues = [identityKey, registrationId, signedPreKeyId, signedPreKey, number];
+
+    // Update user with identity key and other details
+    connection.query(updateUserQuery, updateValues, (err, results) => {
         if (err) {
-            console.error("Error in adding identity key:", err);
+            console.error("Error in updating user keys:", err);
             return;
-        }
-        else {
-            console.log("Keys are added to the db successfully.");
+        } else {
+            console.log("User keys updated successfully.");
+
+            // Retrieve the user_id for the given mobile number
+            const getUserIdQuery = `SELECT user_id FROM Users WHERE mobile_number = ?`;
+            connection.query(getUserIdQuery, [number], (err, result) => {
+                if (err) {
+                    console.error("Error fetching user_id:", err);
+                    return;
+                }
+
+                const userId = result[0].user_id;
+
+                preKeys.forEach((preKeyObject, index) => {
+                    console.log("a", preKeyObject);
+                    const insertPrekeyQuery = `
+                        INSERT INTO Prekeys (user_id, prekey_id, prekey, is_used) 
+                        VALUES (?, ?, ?, ?)`;
+
+                    const prekeyValues = [userId, preKeyObject.preKeyId, preKeyObject.publicPreKey, false];
+
+                    connection.query(insertPrekeyQuery, prekeyValues, (err, results) => {
+                        if (err) {
+                            console.error("Error inserting prekey:", err);
+                            return;
+                        }
+                        console.log(`Prekey ${index + 1} added successfully for user_id: ${userId}`);
+                    });
+                });
+            });
         }
     });
-}
+};
+
+
 
 
 // Image Download Endpoint
@@ -215,7 +248,7 @@ app.use("/others", express.static(path.join(__dirname, 'others')));
 
 
 
-var clients={};
+var clients = {};
 const routes = require("./routes");
 const { type } = require("os");
 app.use("/", routes);
@@ -262,14 +295,14 @@ io.on("connection", (socket) => {
         console.log("Signed pre key id: ", data.signedPreKeyId);
         console.log("Signed pre key: ", data.signedPreKey);
         console.log("Pre keys: ", data.preKeys);
-        storeIdentitKeyInDB(data.number, data.publicIdentityKey, data.registrationId, data.signedPreKeyId, data.signedPreKey, data.preKeys);
+        storeKeysInDB(data.number, data.publicIdentityKey, data.registrationId, data.signedPreKeyId, data.signedPreKey, data.preKeys);
     });
 
     socket.on("register-keys", (data) => {
         // console.log("Data: ", data);
     });
 
-    socket.on("signin", (id)=>{
+    socket.on("signin", (id) => {
         console.log(id);
         clients[id] = socket;
         // console.log(clients[id]);
@@ -280,13 +313,68 @@ io.on("connection", (socket) => {
         searchNumberInDB(socket, data.phoneNumber);
     });
 
+    socket.on("request-public-keys", (data) => {
+        console.log("User Id: ", data.userId);
+
+        // Query for user's identity key and signed prekey
+        const userQuery = "SELECT * FROM Users WHERE user_id = ?";
+        const userValue = [data.userId];
+
+        connection.query(userQuery, userValue, (err, userResult) => {
+            if (err) {
+                console.error("Error fetching user_id:", err);
+                return;
+            }
+
+            if (userResult.length === 0) {
+                console.error("User not found");
+                return;
+            }
+
+            const identity_key = userResult[0].identity_key;
+            const signed_prekey = userResult[0].signed_pre_key;
+
+            console.log("Identity Key: ", identity_key);
+            console.log("Signed pre key: ", signed_prekey);
+
+            // Query for the one-time prekey
+            const prekeyQuery = "SELECT * FROM Prekeys WHERE user_id = ? AND is_used = ?";
+            const prekeyValues = [data.userId, 0];
+
+            connection.query(prekeyQuery, prekeyValues, (err, prekeyResult) => {
+                if (err) {
+                    console.error("Error fetching prekeys:", err);
+                    return;
+                }
+
+                if (prekeyResult.length === 0) {
+                    console.error("No available prekeys");
+                    return;
+                }
+
+                const pre_key = prekeyResult[0].prekey;
+                console.log("Pre Key: ", pre_key);
+
+                // Emit the public keys after both queries have completed
+                if (clients) {
+                    socket.emit("receive-public-keys", {
+                        publicIdentityKey: identity_key,
+                        publicSignedPreKey: signed_prekey,
+                        publicOneTimePreKey: pre_key
+                    });
+                    console.log("Sent");
+                }
+            });
+        });
+    });
+
+
     socket.on("message", (msg) => {
         console.log("Message Received:", msg);
 
         let targetId = msg.targetid;
         console.log("target id: ", targetId);
-        if(targetId) 
-        {
+        if (targetId) {
             clients[targetId].emit("message", msg);
         }
         console.log(users);
@@ -302,9 +390,8 @@ io.on("connection", (socket) => {
         console.log("Sender: ", data.sourceid);
         console.log("Receiver: ", data.targetid);
         targetId = data.targetid;
-        if(targetId) 
-        {
-            clients[targetId].emit("voice-note", { data: data.data, sender: data.sourceid, receiver: data.targetid});
+        if (targetId) {
+            clients[targetId].emit("voice-note", { data: data.data, sender: data.sourceid, receiver: data.targetid });
             console.log("Sent!!");
         }
 
@@ -324,7 +411,7 @@ io.on("connection", (socket) => {
         // console.log("Users: ", users);
         receiver = findSocketIdByUserId(users, String(data.targetId));
         console.log(receiver);
-        if(receiver) {
+        if (receiver) {
             io.to(receiver).emit("delete-message-for-everyone", { sourceId: String(data.sourceId), targetId: String(data.targetId), serverMessageId: String(data.serverMessageId) });
             console.log("Sent");
         } else {
@@ -338,8 +425,8 @@ io.on("connection", (socket) => {
         console.log("Message id is: ", data.messageId);
         console.log("The reaction is: ", data.emoji);
         targetId = data.targetId;
-        if(targetId) {
-            clients[targetId].emit("message-reaction", {messageId: data.messageId, emoji: data.emoji, sourceId: data.sourceId, targetId: data.targetId});
+        if (targetId) {
+            clients[targetId].emit("message-reaction", { messageId: data.messageId, emoji: data.emoji, sourceId: data.sourceId, targetId: data.targetId });
             console.log("Sent");
         }
         insertReactionInDB(data.messageId, data.sourceId, data.emoji);
@@ -353,11 +440,11 @@ io.on("connection", (socket) => {
         // console.log("Current clients:", clients[data.to]);
         caller = findClientIdBySocketId(socket.id, clients);
         console.log(caller);
-    
+
         if (clients[data.to]) {
             console.log(`Emitting incoming-call to ${data.name}`);
             // clients[data.to].emit("incoming-call", { from: socket.id , isVideoCall: data.isVideoCall});
-            io.to(receiver).emit("incoming-call", { from: caller, roomId: data.roomId, isVideoCall: data.isVideoCall});
+            io.to(receiver).emit("incoming-call", { from: caller, roomId: data.roomId, isVideoCall: data.isVideoCall });
         } else {
             console.log(`Client ${data.to} not found`);
         }
@@ -396,7 +483,7 @@ io.on("connection", (socket) => {
         console.log("Ok disconnect");
         other_user = findSocketIdByUserId(users, String(data.to));
         console.log(other_user);
-        io.to(other_user).emit("disconnect-call", {from: socket.id});
+        io.to(other_user).emit("disconnect-call", { from: socket.id });
 
     });
 
@@ -413,56 +500,61 @@ io.on("connection", (socket) => {
         io.to(to).emit("left-call", { to });
     });
 
-    // When an incoming call is accepted
-    // Caller sends their WebRTC offer
-    socket.on("offer-sdp", (data) => {
-        // console.log("Users:", users);
-        const receiver = findSocketIdByUserId(users, data.to);
-        // console.log("Receiver:", receiver);
-        console.log("Offer from ", socket.id, " to ", receiver);
-        // console.log("SDP Offer:", data.sdp);
-        if(receiver) {
-            console.log(receiver)
-            io.to(receiver).emit("offer", { to: socket.id, sdp: data.sdp, type: data.type });
-            console.log("Sent.");
-        }
-        else {
-            console.log("error");
-        }
-        
-        console.log(receiver, 'has got the SDP offer.');
+    socket.on('offer-sdp', (data) => {
+        console.log("SDp offer received");
+        socket.broadcast.emit('offer', data);
+        console.log("offer send to reciever");
     });
 
-    // When an offer is received
-    // Receiver sends a WebRTC offer-answer
-    socket.on("answer-sdp", (data) => {
-        // console.log("SDP answer: ", data.sdp);
-        console.log(data.to);
-        console.log("Offer answer from ", socket.id, " to ", data.to);
-        io.to(data.to).emit("offer-answer", { to: socket.id, sdp: data.sdp, type: data.type });
+    socket.on('answer-sdp', (data) => {
+        socket.broadcast.emit('offer-answer', data);
+        console.log("offer aceepted")
     });
 
-    // When an ICE candidate is sent
-    socket.on("ice-candidate", (data) => {
-        console.log(data.to);
-        receiver = findSocketIdByUserId(users, data.to);
-        // console.log("Receiver:", receiver);
-        console.log("ICE candidate from ", socket.id, " to ", receiver);
-        // console.log("ICE candidates: ", data.candidate);
-        // console.log("ICE Candidate sent!");
-        io.to(receiver).emit("ice-candidate", { to: socket.id, candidate: data.candidate });
+    socket.on('ice-candidate', (data) => {
+        socket.broadcast.emit('ice-candidate', data);
+        console.log("ice candidate attempted")
     });
 
+    // // When an incoming call is accepted
+    // // Caller sends their WebRTC offer
+    // socket.on("offer-sdp", (data) => {
+    //     // console.log("Users:", users);
+    //     const receiver = findSocketIdByUserId(users, data.to);
+    //     // console.log("Receiver:", receiver);
+    //     console.log("Offer from ", socket.id, " to ", receiver);
+    //     // console.log("SDP Offer:", data.sdp);
+    //     if(receiver) {
+    //         console.log(receiver)
+    //         io.to(receiver).emit("offer", { to: socket.id, sdp: data.sdp, type: data.type });
+    //         console.log("Sent.");
+    //     }
+    //     else {
+    //         console.log("error");
+    //     }
 
-    socket.on("ice-candidate-to-caller", (data) => {
-        console.log(data.to);
-        // console.log("ICE candidate from ", socket.id, " to ", data.to);
-        io.to(data.to).emit("ice-candidate-of-receiver", { to: socket.id, candidate: data.candidate });
-    })
+    //     console.log(receiver, 'has got the SDP offer.');
+    // });
 
-    // socket.on("ice-candidate-to-caller", (data) => {
-    //     console.log("Received");
-    // })
+    // // When an offer is received
+    // // Receiver sends a WebRTC offer-answer
+    // socket.on("answer-sdp", (data) => {
+    //     // console.log("SDP answer: ", data.sdp);
+    //     console.log(data.to);
+    //     console.log("Offer answer from ", socket.id, " to ", data.to);
+    //     io.to(data.to).emit("offer-answer", { to: socket.id, sdp: data.sdp, type: data.type });
+    // });
+
+    // // When an ICE candidate is sent
+    // socket.on("ice-candidate", (data) => {
+    //     console.log(data.to);
+    //     receiver = findSocketIdByUserId(users, data.to);
+    //     // console.log("Receiver:", receiver);
+    //     console.log("ICE candidate from ", socket.id, " to ", receiver);
+    //     // console.log("ICE candidates: ", data.candidate);
+    //     // console.log("ICE Candidate sent!");
+    //     io.to(receiver).emit("ice-candidate", { to: socket.id, candidate: data.candidate });
+    // });
 
     // When a socket disconnects
     socket.on("disconnect", (reason) => {
@@ -491,14 +583,14 @@ function findClientIdBySocketId(socketId, clients) {
 
     return foundId
 }
-  
+
 
 const insertReactionInDB = (messageId, userId, reaction) => {
     const insertReactionQuery = "INSERT INTO MessageReaction (message_id, user_id, reaction_type) VALUES (?, ?, ?);";
     const insertReactionValues = [messageId, userId, reaction];
 
     connection.query(insertReactionQuery, insertReactionValues, (err, results) => {
-        if(err) {
+        if (err) {
             return connection.rollback(() => {
                 console.error("Error inserting in the reaction table", err);
             });
@@ -509,7 +601,7 @@ const insertReactionInDB = (messageId, userId, reaction) => {
 
 const insertMessage = (msg, receiver, sender) => {
     connection.beginTransaction((err) => {
-        if(err) {
+        if (err) {
             console.error("Transaction error:", err);
             return;
         }
@@ -520,20 +612,19 @@ const insertMessage = (msg, receiver, sender) => {
         // console.log("Values:", checkChatValues);
 
         connection.query(checkChatQuery, checkChatValues, (err, results) => {
-            if(err) {
+            if (err) {
                 return connection.rollback(() => {
                     console.error("Error checking for existing chat:", err);
                 });
             }
             let chatId;
 
-            if(results.length > 0) {
+            if (results.length > 0) {
                 chatId = results[0].chat_id;
                 console.log("Chat already exist. chat_id:", chatId);
                 insertMessageEntry(chatId, receiver, sender);
             }
-            else
-            {
+            else {
                 const insertChatQuery = "INSERT INTO Chats (user_one_id, user_two_id, last_message_time) VALUES (?, ?, ?);";
                 const insertChatValues = [msg.sourceid, msg.targetid, new Date()];
 
@@ -541,7 +632,7 @@ const insertMessage = (msg, receiver, sender) => {
                 // console.log("Values", insertChatValues);
 
                 connection.query(insertChatQuery, insertChatValues, (err, result) => {
-                    if(err) {
+                    if (err) {
                         return connection.rollback(() => {
                             console.error("Error inserting new chat:", err);
                         });
@@ -556,22 +647,22 @@ const insertMessage = (msg, receiver, sender) => {
     });
 
     const insertMessageEntry = (chatId, receiver, sender) => {
-        if(!msg) {
+        if (!msg) {
             console.error("No message data available");
             return;
         }
 
         let messageType = '';
-        if(msg.path == '') {
+        if (msg.path == '') {
             messageType = 'text';
         }
-        else if(msg.path != '') {
+        else if (msg.path != '') {
             const fileExtension = path.parse(msg.path).ext.toLowerCase();
             console.log(fileExtension);
             if (['.jpg', '.jpeg', '.png', '.gif'].includes(fileExtension)) {
                 messageType = 'image';
-            // } else if (['mp4', 'mkv', 'mov'].includes(fileExtension)) {
-            //     messageType = 'video';
+                // } else if (['mp4', 'mkv', 'mov'].includes(fileExtension)) {
+                //     messageType = 'video';
             } else if (['.mp3', '.wav', '.aac'].includes(fileExtension)) {
                 messageType = 'audio';
             } else if (['.pdf', '.doc', '.docx', '.xls', '.xlsx'].includes(fileExtension)) {
@@ -591,7 +682,7 @@ const insertMessage = (msg, receiver, sender) => {
         // console.log("Values:", insertMessageValues);
 
         connection.query(insertMessageQuery, insertMessageValues, (err, result) => {
-            if(err) {
+            if (err) {
                 return connection.rollback(() => {
                     console.error("Error Inserting Message:", err);
                 });
@@ -600,16 +691,16 @@ const insertMessage = (msg, receiver, sender) => {
             console.log("Sender: ", sender);
             console.log("Receiver: ", receiver);
             const messageId = result.insertId;
-            if(receiver) {
+            if (receiver) {
                 io.to(receiver).emit("message-id", { messageId: messageId });
                 console.log("Emitted to receiver");
             }
-            if(sender) {
+            if (sender) {
                 io.to(sender).emit("message-id", { messageId: messageId });
                 console.log("Emitted to Sender");
             }
-            
-            
+
+
 
             const updateChatQuery = "UPDATE Chats SET last_message_id = ?, last_message_time = ? WHERE chat_id = ?";
             const updateChatValues = [messageId, new Date(), chatId];
@@ -618,8 +709,7 @@ const insertMessage = (msg, receiver, sender) => {
             // console.log("Values:", updateChatValues);
 
             connection.query(updateChatQuery, updateChatValues, (err, results) => {
-                if(err)
-                {
+                if (err) {
                     return connection.rollback(() => {
                         console.error("Error updating chat with last message_id:", err);
                     });
@@ -628,7 +718,7 @@ const insertMessage = (msg, receiver, sender) => {
                 insertMessageReceiptEntry(messageId, msg.targetid);
 
                 connection.commit((err) => {
-                    if(err) {
+                    if (err) {
                         return connection.rollback(() => {
                             console.error("Transaction commit failed:", err);
                         });
