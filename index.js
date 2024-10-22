@@ -501,20 +501,75 @@ io.on("connection", (socket) => {
     });
 
     socket.on('offer-sdp', (data) => {
-        console.log("SDp offer received");
-        socket.broadcast.emit('offer', data);
-        console.log("offer send to reciever");
+        const user = users[socket.id];
+        if (!user) {
+            console.error('User data is not set for socket', socket.id);
+            return;
+        }
+        // console.log("Receiver Id: ", data.to);
+        const recipientUser = findSocketIdByUserId(users, data.to);
+        // console.log("receiver socket id: ", recipientUser);
+        if (!recipientUser) {
+            console.error('Recipient user not found for SDP offer');
+            return;
+        }
+    
+        console.log(`SDP offer received from ${user.name} to ${users[recipientUser].name}`);
+        io.to(recipientUser).emit('offer', data);
+        console.log("Offer sent to specific receiver");
     });
 
     socket.on('answer-sdp', (data) => {
-        socket.broadcast.emit('offer-answer', data);
-        console.log("offer aceepted")
+        const user = users[socket.id];
+        if (!user) {
+            console.error('User data is not set for socket', socket.id);
+            return;
+        }
+    
+        const recipientUser = findSocketIdByUserId(users, data.to);
+        if (!recipientUser) {
+            console.error('Recipient user not found for SDP answer');
+            return;
+        }
+    
+        console.log(`SDP answer received from ${user.name} to ${users[recipientUser].name}`);
+        io.to(recipientUser).emit('offer-answer', data);
+        console.log("Answer sent to specific receiver");
     });
 
     socket.on('ice-candidate', (data) => {
-        socket.broadcast.emit('ice-candidate', data);
-        console.log("ice candidate attempted")
+        const user = users[socket.id];
+        if (!user) {
+            console.error('User data is not set for socket', socket.id);
+            return;
+        }
+    
+        const recipientUser = findSocketIdByUserId(users, data.to);
+        if (!recipientUser) {
+            console.error('Recipient user not found for ICE candidate');
+            return;
+        }
+    
+        console.log(`ICE candidate received from ${user.name} to ${users[recipientUser].name}`);
+        io.to(recipientUser).emit('ice-candidate', data);
+        console.log("ICE candidate sent to specific receiver");
     });
+
+    // socket.on('offer-sdp', (data) => {
+    //     console.log("SDp offer received");
+    //     socket.broadcast.emit('offer', data);
+    //     console.log("offer send to reciever");
+    // });
+
+    // socket.on('answer-sdp', (data) => {
+    //     socket.broadcast.emit('offer-answer', data);
+    //     console.log("offer aceepted")
+    // });
+
+    // socket.on('ice-candidate', (data) => {
+    //     socket.broadcast.emit('ice-candidate', data);
+    //     console.log("ice candidate attempted")
+    // });
 
     // // When an incoming call is accepted
     // // Caller sends their WebRTC offer
