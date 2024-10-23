@@ -508,7 +508,7 @@ io.on("connection", (socket) => {
         }
         // console.log("Receiver Id: ", data.to);
         const recipientUser = findSocketIdByUserId(users, data.to);
-        // console.log("receiver socket id: ", recipientUser);
+        console.log("receiver socket id: ", recipientUser);
         if (!recipientUser) {
             console.error('Recipient user not found for SDP offer');
             return;
@@ -630,6 +630,9 @@ function findClientIdBySocketId(socketId, clients) {
     let foundId = null;
 
     for (const id in clients) {
+        console.log("1234:", id);
+        console.log("ABC:", clients[id].id);
+        console.log("Sockte id: ", socketId);
         if (clients[id].id === socketId) {
             foundId = id;
             break;
