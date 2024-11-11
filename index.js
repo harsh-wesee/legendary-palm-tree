@@ -15,7 +15,6 @@ var io = require("socket.io")(server, {
 const connection = require("./db_connection");
 const otpGen = require("otp-generator");
 
-const morgan = require("morgan");
 let users = []
 
 
@@ -132,6 +131,7 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
             //Execute these lines for making the entry of the user in the DB
             const insertUserQuery = "INSERT INTO Users (mobile_number, username, profile_picture, status, last_seen, is_online) VALUES (?, NULL, NULL, FALSE, NULL, FALSE)";
             const insertUserValues = [phoneNumber];
+            
 
             connection.query(insertUserQuery, insertUserValues, (err, result) => {
                 if (err) {
@@ -140,7 +140,11 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
                     return;
                 }
 
-                socket.emit("otpSuccess", "User verified and added successfully");
+                userId = result.insertId;
+                console.log("User id: ", userId);
+                socket.emit("otpSuccess", {userId: userId});
+                
+                
 
                 // Delete OTP after successful verification
                 // const deleteOtpQuery = "DELETE FROM UserOTPs WHERE mobile_number = ? AND otp = ?";
@@ -155,7 +159,12 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
 };
 
 const searchNumberInDB = (socket, phoneNumber) => {
-    const query = "SELECT * FROM Users WHERE mobile_number LIKE ?";
+    // const query = "SELECT * FROM Users WHERE mobile_number LIKE ?";
+    const query = `
+        SELECT * FROM Users 
+        WHERE REPLACE(REPLACE(REPLACE(REPLACE(mobile_number, '-', ''), ' ', ''), '(', ''), ')', '') 
+        LIKE REPLACE(REPLACE(REPLACE(REPLACE(?, '-', ''), ' ', ''), '(', ''), ')', '')
+    `;
     const values = [`%${phoneNumber}`];
     // console.log("Query: ", query);
     console.log("Values:", values);
@@ -170,7 +179,10 @@ const searchNumberInDB = (socket, phoneNumber) => {
             return;
         }
         else {
-            socket.emit("user-exists-response", { contactNumber: phoneNumber, exists: true });
+            let userId;
+            userId = results[0].user_id;
+            // console.log("user id: ", userId);
+            socket.emit("user-exists-response", { contactNumber: phoneNumber, exists: true, userId: userId });
         }
     });
 }
@@ -222,6 +234,20 @@ const storeKeysInDB = (number, identityKey, registrationId, signedPreKeyId, sign
     });
 };
 
+const makeUserOnline = (id) => {
+    const query =  `UPDATE Users SET status = ? WHERE user_id = ?`;
+    const values = [1, id];
+    connection.query(query, values, (err, results) => {
+        if (err) {
+            console.error("Error in updating the user online:", err);
+            return;
+        }
+        else {
+            console.log("The User is online.");
+        }
+    });
+};
+
 
 
 
@@ -249,6 +275,7 @@ app.use("/others", express.static(path.join(__dirname, 'others')));
 
 
 var clients = {};
+const offlineMessages = {};
 const routes = require("./routes");
 const { type } = require("os");
 app.use("/", routes);
@@ -298,14 +325,39 @@ io.on("connection", (socket) => {
         storeKeysInDB(data.number, data.publicIdentityKey, data.registrationId, data.signedPreKeyId, data.signedPreKey, data.preKeys);
     });
 
-    socket.on("register-keys", (data) => {
-        // console.log("Data: ", data);
-    });
-
     socket.on("signin", (id) => {
         console.log(id);
-        clients[id] = socket;
+        clients[id] = socket.id;
         // console.log(clients[id]);
+        makeUserOnline(id);
+        console.log(clients);
+
+        if (offlineMessages[id] && offlineMessages[id].length > 0) {
+            offlineMessages[id].forEach(({ msg, sender }) => {
+                io.to(clients[id]).emit("message", msg);
+    
+                // Optionally store the message in the database after sending
+                setTimeout(() => insertMessage(msg, clients[id], sender), 1000);
+            });
+    
+            // Clear the offline message queue for the user after sending
+            // delete offlineMessages[clients[id]];
+        }
+    });
+
+    socket.on("username", (data) => {
+        console.log("Username: ", data.username);
+        console.log("User id: ", data.userId);
+        const query = "UPDATE Users SET username = ? WHERE user_id = ?";
+        const values = [data.username, data.userId];
+
+        connection.query(query, values, (err, results) => {
+            if (err) {
+                console.error("Error in updating username:", err);
+                return;
+            }
+            console.log("Username is added successfully");
+        });
     });
 
     socket.on("get-contacts", (data) => {
@@ -373,26 +425,50 @@ io.on("connection", (socket) => {
         console.log("Message Received:", msg);
 
         let targetId = msg.targetid;
-        console.log("target id: ", targetId);
-        if (targetId) {
-            clients[targetId].emit("message", msg);
+        uuidId = msg.uuidId;
+        console.log("UUID: ", uuidId);
+        console.log("target id: ", clients[targetId]);
+        if (clients[targetId]) {
+            io.to(clients[targetId]).emit("message", msg);
+            receiver = clients[targetId];
+            sender = clients[msg.sourceid];
+            setTimeout(() => insertMessage(msg, receiver, sender, uuidId), 1000);
         }
-        console.log(users);
-        receiver = clients[targetId].id;
-        sender = clients[msg.sourceid].id
-        setTimeout(() => insertMessage(msg, receiver, sender), 1000);
+        else {
+            console.log(`Client with targetId ${targetId} is offline`);
+            sender = clients[msg.sourceid];
+
+            if (!offlineMessages[targetId]) {
+                offlineMessages[targetId] = [];
+            }
+
+            offlineMessages[targetId].push({ msg, sender });
+            console.log("Offline messages: ", offlineMessages);
+        }
+        // receiver = clients[targetId];
+        // sender = clients[msg.sourceid];
+        // setTimeout(() => insertMessage(msg, receiver, sender), 1000);
         // insertMessage(msg, receiver, sender);
 
     });
 
     socket.on("voice-note", (data) => {
-        console.log("Message Received for voice note: ", data.data);
+        // console.log("Message Received for voice note: ", data.data);
         console.log("Sender: ", data.sourceid);
         console.log("Receiver: ", data.targetid);
+        
         targetId = data.targetid;
-        if (targetId) {
-            clients[targetId].emit("voice-note", { data: data.data, sender: data.sourceid, receiver: data.targetid });
+        console.log("Socket of Receiver: ", clients[targetId]);
+        if (clients[targetId]) {
+            io.to(clients[targetId]).emit("message", msg);
+            receiver = clients[targetId];
+            sender = clients[msg.sourceid];
+            setTimeout(() => insertMessage(msg, receiver, sender), 1000);
             console.log("Sent!!");
+        }
+        else {
+            setTimeout(() => insertMessage(msg, receiver, sender), 1000);
+            console.log("Offline");
         }
 
     });
@@ -401,6 +477,7 @@ io.on("connection", (socket) => {
     socket.on('set-user', (userData) => {
         // Store user information with the socket ID
         users[socket.id] = userData;
+        users[userData] = socket.id;
         console.log('User data set for socket', socket.id, ':', userData);
     });
 
@@ -426,7 +503,7 @@ io.on("connection", (socket) => {
         console.log("The reaction is: ", data.emoji);
         targetId = data.targetId;
         if (targetId) {
-            clients[targetId].emit("message-reaction", { messageId: data.messageId, emoji: data.emoji, sourceId: data.sourceId, targetId: data.targetId });
+            io.to(clients[targetId]).emit("message-reaction", { messageId: data.messageId, emoji: data.emoji, sourceId: data.sourceId, targetId: data.targetId });
             console.log("Sent");
         }
         insertReactionInDB(data.messageId, data.sourceId, data.emoji);
@@ -434,8 +511,9 @@ io.on("connection", (socket) => {
 
     // When we get a call to start a call
     socket.on("start-call", (data) => {
-        console.log(data.roomId);
-        receiver = findSocketIdByUserId(users, data.to);
+        // console.log(data.roomId);
+        receiver = findSocketIdByUserId(clients, data.to);
+        console.log("receiver: ", receiver);
         // console.log(`Socket ID: ${socket.id}, Initiating call request to ${receiver} and the calltype is ${data.isVideoCall}`);
         // console.log("Current clients:", clients[data.to]);
         caller = findClientIdBySocketId(socket.id, clients);
@@ -453,24 +531,25 @@ io.on("connection", (socket) => {
 
     // When an incoming call is accepted
     socket.on('accept-call', (data) => {
-        const user = users[socket.id];
-        // console.log("User:", user);
-        if (!user) {
-            console.error('User data is not set for socket', socket.id);
-            return;
-        }
-        // console.log(data.to);
-        const recipientUser = findSocketIdByUserId(users, data.to);
-        // console.log("Caller:", recipientUser);
-        if (!recipientUser) {
+        console.log(data.to);
+        const caller = findSocketIdByUserId(clients, data.to);
+        console.log("Caller:", caller);
+        if (!caller) {
             console.error('Recipient user data is not set for socket', socket.id);
             return;
         }
-        console.log(`Call accepted by ${user.name} from ${recipientUser}`);
+        console.log(`Call accepted by ${socket.id} from ${caller}`);
         console.log("Room Id: ", data.roomId);
         socket.join(data.roomId);
         // console.log(data.to);
-        io.to(recipientUser).emit("call-accepted", { roomId: data.roomId, to: data.to, isVideoCall: data.isVideoCall });
+        io.to(caller).emit("call-accepted", { roomId: data.roomId, to: data.to, isVideoCall: data.isVideoCall });
+    });
+
+    socket.on("end-call", (data) => {
+        console.log("User who ends the call: ", data.from);
+        console.log("Send the event to: ", data.to);
+        const otherUser = findSocketIdByUserId(clients, data.to);
+        io.to(otherUser).emit("end-call", { from: data.from, to: data.to});
     });
 
     // When an incoming call is denied
@@ -501,57 +580,38 @@ io.on("connection", (socket) => {
     });
 
     socket.on('offer-sdp', (data) => {
-        const user = users[socket.id];
-        if (!user) {
-            console.error('User data is not set for socket', socket.id);
-            return;
-        }
-        // console.log("Receiver Id: ", data.to);
-        const recipientUser = findSocketIdByUserId(users, data.to);
-        console.log("receiver socket id: ", recipientUser);
-        if (!recipientUser) {
+        console.log("Receiver Id: ", data.to);
+        const receiver = findSocketIdByUserId(clients, data.to);
+        console.log("receiver socket id: ", receiver);
+        if (!receiver) {
             console.error('Recipient user not found for SDP offer');
             return;
         }
     
-        console.log(`SDP offer received from ${user.name} to ${users[recipientUser].name}`);
-        io.to(recipientUser).emit('offer', data);
+        console.log(`SDP offer received from ${socket.id} to ${receiver}`);
+        io.to(receiver).emit('offer', data);
         console.log("Offer sent to specific receiver");
     });
 
     socket.on('answer-sdp', (data) => {
-        const user = users[socket.id];
-        if (!user) {
-            console.error('User data is not set for socket', socket.id);
-            return;
-        }
-    
-        const recipientUser = findSocketIdByUserId(users, data.to);
-        if (!recipientUser) {
+        console.log("Caller: ", data.to)
+        const caller = findSocketIdByUserId(clients, data.to);
+        if (!caller) {
             console.error('Recipient user not found for SDP answer');
             return;
         }
     
-        console.log(`SDP answer received from ${user.name} to ${users[recipientUser].name}`);
-        io.to(recipientUser).emit('offer-answer', data);
+        console.log(`SDP answer received from ${socket.id} to ${caller}`);
+        io.to(caller).emit('offer-answer', data);
         console.log("Answer sent to specific receiver");
     });
 
     socket.on('ice-candidate', (data) => {
-        const user = users[socket.id];
-        if (!user) {
-            console.error('User data is not set for socket', socket.id);
-            return;
-        }
+        console.log("User: ", data.to)
+        const user = findSocketIdByUserId(clients, data.to);
     
-        const recipientUser = findSocketIdByUserId(users, data.to);
-        if (!recipientUser) {
-            console.error('Recipient user not found for ICE candidate');
-            return;
-        }
-    
-        console.log(`ICE candidate received from ${user.name} to ${users[recipientUser].name}`);
-        io.to(recipientUser).emit('ice-candidate', data);
+        console.log(`ICE candidate received from ${socket.id} to ${user}`);
+        io.to(user).emit('ice-candidate', data);
         console.log("ICE candidate sent to specific receiver");
     });
 
@@ -613,33 +673,73 @@ io.on("connection", (socket) => {
 
     // When a socket disconnects
     socket.on("disconnect", (reason) => {
-        users = users.filter((u) => u != socket.user);
+        console.log("A socket disconnected ", socket.id);
+        id = findKeyByValue(clients, socket.id);
+        console.log("Id of disconnected user: ", id);
+        makeUserOffline(id);
+        delete clients[id];
+        console.log(clients);
+        // users = users.filter((u) => u != socket.user);
 
-        users.forEach((user) => {
-            io.to(user).emit("user-left", { user: socket.user });
-        });
-        console.log("A socket disconnected ", socket.user);
+        // users.forEach((user) => {
+        //     io.to(user).emit("user-left", { user: socket.user });
+        // });
     });
 });
 
-function findSocketIdByUserId(users, userId) {
-    return Object.keys(users).find(socketId => users[socketId].id === userId);
+const makeUserOffline = (id) => {
+    const query =  `UPDATE Users SET status = ? WHERE user_id = ?`;
+    const values = [0, id];
+    connection.query(query, values, (err, results) => {
+        if (err) {
+            console.error("Error in updating the user online:", err);
+            return;
+        }
+        else {
+            console.log("The User is offline.");
+        }
+    });
+};
+
+function findKeyByValue(obj, value) {
+    for (let [key, val] of Object.entries(obj)) {
+        if (val === value) {
+            return key;
+        }
+    }
+    return undefined;
+}
+
+function findSocketIdByUserId(clients, userId) {
+    // return Object.keys(users).find(socketId => users[socketId].id === userId);
+    return clients[userId];
 }
 
 function findClientIdBySocketId(socketId, clients) {
     let foundId = null;
 
-    for (const id in clients) {
-        console.log("1234:", id);
-        console.log("ABC:", clients[id].id);
-        console.log("Sockte id: ", socketId);
-        if (clients[id].id === socketId) {
-            foundId = id;
+    // for (const id in clients) {
+    //     console.log("1234:", id);
+    //     console.log("ABC:", clients[id]);
+    //     console.log("Sockte id: ", socketId);
+    //     if (clients[id] === socketId) {
+    //         foundId = id;
+    //         break;
+    //     }
+    // }
+
+    // return foundId
+
+    for (const userId in clients) {
+        // console.log("User id: ", userId);
+        // console.log("Required socket id: ", socketId);
+        // console.log("Socket id: ", clients[userId]);
+        if (clients[userId] === socketId) {
+            foundId = userId;
             break;
         }
     }
-
-    return foundId
+    return foundId;
 }
 
 
@@ -657,7 +757,7 @@ const insertReactionInDB = (messageId, userId, reaction) => {
     })
 }
 
-const insertMessage = (msg, receiver, sender) => {
+const insertMessage = (msg, receiver, sender, uuidId) => {
     connection.beginTransaction((err) => {
         if (err) {
             console.error("Transaction error:", err);
@@ -680,7 +780,7 @@ const insertMessage = (msg, receiver, sender) => {
             if (results.length > 0) {
                 chatId = results[0].chat_id;
                 console.log("Chat already exist. chat_id:", chatId);
-                insertMessageEntry(chatId, receiver, sender);
+                insertMessageEntry(chatId, receiver, sender, uuidId);
             }
             else {
                 const insertChatQuery = "INSERT INTO Chats (user_one_id, user_two_id, last_message_time) VALUES (?, ?, ?);";
@@ -698,13 +798,13 @@ const insertMessage = (msg, receiver, sender) => {
 
                     chatId = result.insertId;
                     console.log("New Chat Inserted. chat_id:", chatId);
-                    insertMessageEntry(chatId, receiver, sender);
+                    insertMessageEntry(chatId, receiver, sender, uuidId);
                 });
             }
         });
     });
 
-    const insertMessageEntry = (chatId, receiver, sender) => {
+    const insertMessageEntry = (chatId, receiver, sender, uuidId) => {
         if (!msg) {
             console.error("No message data available");
             return;
@@ -733,8 +833,8 @@ const insertMessage = (msg, receiver, sender) => {
             messageType = 'unknown';
         }
 
-        const insertMessageQuery = "INSERT INTO Messages (chat_id, sender_id, message_text, media_url, message_type, created_at) VALUES (?, ?, ?, ?, ?, ?)";
-        const insertMessageValues = [chatId, msg.sourceid, msg.message, msg.path, messageType, new Date()];
+        const insertMessageQuery = "INSERT INTO Messages (chat_id, sender_id, message_text, media_url, message_type, created_at, uuidId) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        const insertMessageValues = [chatId, msg.sourceid, msg.message, msg.path, messageType, new Date(), uuidId];
 
         // console.log("Inseting message with query:", insertMessageQuery);
         // console.log("Values:", insertMessageValues);
@@ -750,11 +850,11 @@ const insertMessage = (msg, receiver, sender) => {
             console.log("Receiver: ", receiver);
             const messageId = result.insertId;
             if (receiver) {
-                io.to(receiver).emit("message-id", { messageId: messageId });
+                io.to(receiver).emit("message-id", { messageId: messageId, uuidId: uuidId });
                 console.log("Emitted to receiver");
             }
             if (sender) {
-                io.to(sender).emit("message-id", { messageId: messageId });
+                io.to(sender).emit("message-id", { messageId: messageId, uuidId: uuidId });
                 console.log("Emitted to Sender");
             }
 
@@ -805,5 +905,5 @@ const insertMessage = (msg, receiver, sender) => {
 
 
 server.listen(port, "0.0.0.0", () => {
-    console.log("Server is Started.");
+    console.log("Server is Started and running on the port: ", port);
 });
