@@ -333,15 +333,15 @@ io.on("connection", (socket) => {
         console.log(clients);
 
         if (offlineMessages[id] && offlineMessages[id].length > 0) {
-            offlineMessages[id].forEach(({ msg, sender }) => {
+            offlineMessages[id].forEach(({ msg, sender, uuidId }) => {
                 io.to(clients[id]).emit("message", msg);
     
                 // Optionally store the message in the database after sending
-                setTimeout(() => insertMessage(msg, clients[id], sender), 1000);
+                setTimeout(() => insertMessage(msg, clients[id], sender, uuidId), 1000);
             });
     
             // Clear the offline message queue for the user after sending
-            // delete offlineMessages[clients[id]];
+            delete offlineMessages[clients[id]];
         }
     });
 
@@ -442,7 +442,7 @@ io.on("connection", (socket) => {
                 offlineMessages[targetId] = [];
             }
 
-            offlineMessages[targetId].push({ msg, sender });
+            offlineMessages[targetId].push({ msg, sender, uuidId });
             console.log("Offline messages: ", offlineMessages);
         }
         // receiver = clients[targetId];
