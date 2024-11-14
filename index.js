@@ -328,22 +328,23 @@ io.on("connection", (socket) => {
     socket.on("signin", (id) => {
         console.log(id);
         clients[id] = socket.id;
-        // console.log(clients[id]);
         makeUserOnline(id);
         console.log(clients);
-
+    
         if (offlineMessages[id] && offlineMessages[id].length > 0) {
-            offlineMessages[id].forEach(({ msg, sender, uuidId }) => {
+            while (offlineMessages[id].length > 0) {
+                const { msg, sender, uuidId } = offlineMessages[id][0];
                 io.to(clients[id]).emit("message", msg);
-    
-                // Optionally store the message in the database after sending
+                io.to(sender).emit("receiver-online", { uuidId: uuidId });
                 setTimeout(() => insertMessage(msg, clients[id], sender, uuidId), 1000);
-            });
-    
-            // Clear the offline message queue for the user after sending
-            delete offlineMessages[clients[id]];
+                offlineMessages[id].splice(0, 1);
+            }
+            if (offlineMessages[id].length === 0) {
+                delete offlineMessages[id];
+            }
         }
     });
+    
 
     socket.on("username", (data) => {
         console.log("Username: ", data.username);
@@ -423,18 +424,20 @@ io.on("connection", (socket) => {
 
     socket.on("message", (msg) => {
         console.log("Message Received:", msg);
-
         let targetId = msg.targetid;
         uuidId = msg.uuidId;
         console.log("UUID: ", uuidId);
         console.log("target id: ", clients[targetId]);
+
         if (clients[targetId]) {
+            socket.emit("receiver-online", {uuidId: uuidId});
             io.to(clients[targetId]).emit("message", msg);
             receiver = clients[targetId];
             sender = clients[msg.sourceid];
             setTimeout(() => insertMessage(msg, receiver, sender, uuidId), 1000);
         }
         else {
+            socket.emit("receiver-offline", {uuidId: uuidId});
             console.log(`Client with targetId ${targetId} is offline`);
             sender = clients[msg.sourceid];
 
@@ -445,11 +448,6 @@ io.on("connection", (socket) => {
             offlineMessages[targetId].push({ msg, sender, uuidId });
             console.log("Offline messages: ", offlineMessages);
         }
-        // receiver = clients[targetId];
-        // sender = clients[msg.sourceid];
-        // setTimeout(() => insertMessage(msg, receiver, sender), 1000);
-        // insertMessage(msg, receiver, sender);
-
     });
 
     socket.on("voice-note", (data) => {
@@ -518,6 +516,12 @@ io.on("connection", (socket) => {
         // console.log("Current clients:", clients[data.to]);
         caller = findClientIdBySocketId(socket.id, clients);
         console.log(caller);
+        if(data.isVideoCall) {
+            callType = 'video';
+        }
+        else {
+            callType = 'audio';
+        }
 
         if (clients[data.to]) {
             console.log(`Emitting incoming-call to ${data.name}`);
@@ -526,6 +530,7 @@ io.on("connection", (socket) => {
         } else {
             console.log(`Client ${data.to} not found`);
         }
+        insertCallInDB(caller, data.to, callType, data.roomId);
     });
 
 
@@ -740,6 +745,19 @@ function findClientIdBySocketId(socketId, clients) {
         }
     }
     return foundId;
+}
+
+const insertCallInDB = (caller, receiver, callType, roomId) => {
+    const insertCallQuery = "INSERT INTO Calls (caller_id, receiver_id, call_type, start_time, call_room_id) VALUES (?, ?, ?, ?, ?)";
+    const insertCallValue = [caller, receiver, callType, new Date(), roomId];
+    connection.query(insertCallQuery, insertCallValue, (err, results) => {
+        if(err) {
+            return connection.rollback(() => {
+                console.error("Error inserting in the call table", err);
+            });
+        }
+        console.log("Call Inserted with Id:", results.insertId);
+    });
 }
 
 
