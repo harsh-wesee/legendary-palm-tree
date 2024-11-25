@@ -3,7 +3,6 @@ var http = require("http");
 const path = require("path");
 const cors = require("cors");
 const app = express();
-require('dotenv').config();
 const port = process.env.port || 5000;
 var server = http.createServer(app);
 var io = require("socket.io")(server, {
@@ -18,10 +17,6 @@ const otpGen = require("otp-generator");
 
 let users = []
 
-
-var sid = process.env.SID;                
-var auth_token = process.env.AUTH_TOKEN;
-var twilio = require("twilio")(sid, auth_token);
 
 
 // middleware
@@ -81,13 +76,13 @@ const storeOtpInDB = (phoneNumber, otp) => {
     });
 };
 
-const sendOtp = (phoneNumber, otp) => {
-    return twilio.messages.create({
-        from: "+12564484468",
-        to: phoneNumber,
-        body: `The testing OTP is ${otp}.`
-    });
-};
+// const sendOtp = (phoneNumber, otp) => {
+//     return twilio.messages.create({
+//         from: "+12564484468",
+//         to: phoneNumber,
+//         body: `The testing OTP is ${otp}.`
+//     });
+// };
 
 const verifyOtpInDB = (socket, phoneNumber, otp) => {
     const query = "SELECT * FROM UserOTPs WHERE mobile_number = ? AND otp = ?"; // Optional: Add timestamp check for OTP validity
