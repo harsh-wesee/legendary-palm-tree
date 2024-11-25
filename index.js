@@ -131,7 +131,7 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
             //Execute these lines for making the entry of the user in the DB
             const insertUserQuery = "INSERT INTO Users (mobile_number, username, profile_picture, status, last_seen, is_online) VALUES (?, NULL, NULL, FALSE, NULL, FALSE)";
             const insertUserValues = [phoneNumber];
-            
+
 
             connection.query(insertUserQuery, insertUserValues, (err, result) => {
                 if (err) {
@@ -142,9 +142,9 @@ const verifyOtpInDB = (socket, phoneNumber, otp) => {
 
                 userId = result.insertId;
                 console.log("User id: ", userId);
-                socket.emit("otpSuccess", {userId: userId});
-                
-                
+                socket.emit("otpSuccess", { userId: userId });
+
+
 
                 // Delete OTP after successful verification
                 // const deleteOtpQuery = "DELETE FROM UserOTPs WHERE mobile_number = ? AND otp = ?";
@@ -187,13 +187,14 @@ const searchNumberInDB = (socket, phoneNumber) => {
     });
 }
 
-const storeKeysInDB = (number, identityKey, registrationId, signedPreKeyId, signedPreKey, preKeys) => {
+const storeKeysInDB = (mobile_number, identityKey, registrationId, signedPreKeyId, signedPreKey, preKeys, signedPreKeySignature) => {
+    number = `+${mobile_number}`;
     const updateUserQuery = `
         UPDATE Users 
-        SET identity_key = ?, registration_id = ?, signed_pre_key_id = ?, signed_pre_key = ? 
+        SET identity_key = ?, registration_id = ?, signed_pre_key_id = ?, signed_pre_key = ?, signed_pre_key_signature = ? 
         WHERE mobile_number = ?`;
 
-    const updateValues = [identityKey, registrationId, signedPreKeyId, signedPreKey, number];
+    const updateValues = [identityKey, registrationId, signedPreKeyId, signedPreKey, signedPreKeySignature, number];
 
     // Update user with identity key and other details
     connection.query(updateUserQuery, updateValues, (err, results) => {
@@ -201,6 +202,7 @@ const storeKeysInDB = (number, identityKey, registrationId, signedPreKeyId, sign
             console.error("Error in updating user keys:", err);
             return;
         } else {
+            console.log("Mobile number, ", number);
             console.log("User keys updated successfully.");
 
             // Retrieve the user_id for the given mobile number
@@ -212,22 +214,18 @@ const storeKeysInDB = (number, identityKey, registrationId, signedPreKeyId, sign
                 }
 
                 const userId = result[0].user_id;
+                const insertPrekeyQuery = `
+                        INSERT INTO Prekeys (user_id, prekey) 
+                        VALUES (?, ?)`;
 
-                preKeys.forEach((preKeyObject, index) => {
-                    console.log("a", preKeyObject);
-                    const insertPrekeyQuery = `
-                        INSERT INTO Prekeys (user_id, prekey_id, prekey, is_used) 
-                        VALUES (?, ?, ?, ?)`;
+                const prekeyValues = [userId, JSON.stringify(preKeys)];
 
-                    const prekeyValues = [userId, preKeyObject.preKeyId, preKeyObject.publicPreKey, false];
-
-                    connection.query(insertPrekeyQuery, prekeyValues, (err, results) => {
-                        if (err) {
-                            console.error("Error inserting prekey:", err);
-                            return;
-                        }
-                        console.log(`Prekey ${index + 1} added successfully for user_id: ${userId}`);
-                    });
+                connection.query(insertPrekeyQuery, prekeyValues, (err, results) => {
+                    if (err) {
+                        console.error("Error inserting prekey:", err);
+                        return;
+                    }
+                    console.log(`Prekey added successfully for user_id: ${userId}`);
                 });
             });
         }
@@ -235,7 +233,7 @@ const storeKeysInDB = (number, identityKey, registrationId, signedPreKeyId, sign
 };
 
 const makeUserOnline = (id) => {
-    const query =  `UPDATE Users SET status = ? WHERE user_id = ?`;
+    const query = `UPDATE Users SET status = ? WHERE user_id = ?`;
     const values = [1, id];
     connection.query(query, values, (err, results) => {
         if (err) {
@@ -322,7 +320,8 @@ io.on("connection", (socket) => {
         console.log("Signed pre key id: ", data.signedPreKeyId);
         console.log("Signed pre key: ", data.signedPreKey);
         console.log("Pre keys: ", data.preKeys);
-        storeKeysInDB(data.number, data.publicIdentityKey, data.registrationId, data.signedPreKeyId, data.signedPreKey, data.preKeys);
+        console.log("Signed pre key signature: ", data.signedPreKeySignature);
+        storeKeysInDB(data.number, data.publicIdentityKey, data.registrationId, data.signedPreKeyId, data.signedPreKey, data.preKeys, data.signedPreKeySignature);
     });
 
     socket.on("signin", (id) => {
@@ -330,7 +329,7 @@ io.on("connection", (socket) => {
         clients[id] = socket.id;
         makeUserOnline(id);
         console.log(clients);
-    
+
         if (offlineMessages[id] && offlineMessages[id].length > 0) {
             while (offlineMessages[id].length > 0) {
                 const { msg, sender, uuidId } = offlineMessages[id][0];
@@ -344,7 +343,7 @@ io.on("connection", (socket) => {
             }
         }
     });
-    
+
 
     socket.on("username", (data) => {
         console.log("Username: ", data.username);
@@ -384,15 +383,21 @@ io.on("connection", (socket) => {
                 return;
             }
 
+            const remoteRegistrationId = userResult[0].registration_id;
             const identity_key = userResult[0].identity_key;
             const signed_prekey = userResult[0].signed_pre_key;
+            const signed_prekey_id = userResult[0].signed_pre_key_id;
+            const signedPreKeySignature = userResult[0].signed_pre_key_signature;
 
             console.log("Identity Key: ", identity_key);
             console.log("Signed pre key: ", signed_prekey);
+            console.log("Signed Pre Key Id: ", signed_prekey_id);
+            console.log("Registration Id: ", remoteRegistrationId);
+            console.log("Signed Pre Key Signature: ", signedPreKeySignature);
 
             // Query for the one-time prekey
-            const prekeyQuery = "SELECT * FROM Prekeys WHERE user_id = ? AND is_used = ?";
-            const prekeyValues = [data.userId, 0];
+            const prekeyQuery = "SELECT * FROM Prekeys WHERE user_id = ?";
+            const prekeyValues = [data.userId];
 
             connection.query(prekeyQuery, prekeyValues, (err, prekeyResult) => {
                 if (err) {
@@ -411,11 +416,14 @@ io.on("connection", (socket) => {
                 // Emit the public keys after both queries have completed
                 if (clients) {
                     socket.emit("receive-public-keys", {
-                        publicIdentityKey: identity_key,
-                        publicSignedPreKey: signed_prekey,
-                        publicOneTimePreKey: pre_key
+                        remoteRegistrationId: remoteRegistrationId,
+                        remoteOneTimePreKey: pre_key,
+                        signedPreKeyId: signed_prekey_id,
+                        remoteSignedPreKey: signed_prekey,
+                        signedPreKeySignature: signedPreKeySignature,
+                        remoteIdentityKey: identity_key,
                     });
-                    console.log("Sent");
+                    console.log("All the required keys are sent!!!!");
                 }
             });
         });
@@ -430,14 +438,14 @@ io.on("connection", (socket) => {
         console.log("target id: ", clients[targetId]);
 
         if (clients[targetId]) {
-            socket.emit("receiver-online", {uuidId: uuidId});
+            socket.emit("receiver-online", { uuidId: uuidId });
             io.to(clients[targetId]).emit("message", msg);
             receiver = clients[targetId];
             sender = clients[msg.sourceid];
             setTimeout(() => insertMessage(msg, receiver, sender, uuidId), 1000);
         }
         else {
-            socket.emit("receiver-offline", {uuidId: uuidId});
+            socket.emit("receiver-offline", { uuidId: uuidId });
             console.log(`Client with targetId ${targetId} is offline`);
             sender = clients[msg.sourceid];
 
@@ -454,7 +462,7 @@ io.on("connection", (socket) => {
         // console.log("Message Received for voice note: ", data.data);
         console.log("Sender: ", data.sourceid);
         console.log("Receiver: ", data.targetid);
-        
+
         targetId = data.targetid;
         console.log("Socket of Receiver: ", clients[targetId]);
         if (clients[targetId]) {
@@ -516,7 +524,7 @@ io.on("connection", (socket) => {
         // console.log("Current clients:", clients[data.to]);
         caller = findClientIdBySocketId(socket.id, clients);
         console.log(caller);
-        if(data.isVideoCall) {
+        if (data.isVideoCall) {
             callType = 'video';
         }
         else {
@@ -528,7 +536,7 @@ io.on("connection", (socket) => {
             // clients[data.to].emit("incoming-call", { from: socket.id , isVideoCall: data.isVideoCall});
             io.to(receiver).emit("incoming-call", { from: caller, roomId: data.roomId, isVideoCall: data.isVideoCall });
         } else {
-            console.log(`Client ${data.to} not found`);
+            console.log(`Client ${data.to} IS OFFLINE`);
         }
         insertCallInDB(caller, data.to, callType, data.roomId);
     });
@@ -554,7 +562,7 @@ io.on("connection", (socket) => {
         console.log("User who ends the call: ", data.from);
         console.log("Send the event to: ", data.to);
         const otherUser = findSocketIdByUserId(clients, data.to);
-        io.to(otherUser).emit("end-call", { from: data.from, to: data.to});
+        io.to(otherUser).emit("end-call", { from: data.from, to: data.to });
     });
 
     // When an incoming call is denied
@@ -592,7 +600,7 @@ io.on("connection", (socket) => {
             console.error('Recipient user not found for SDP offer');
             return;
         }
-    
+
         console.log(`SDP offer received from ${socket.id} to ${receiver}`);
         io.to(receiver).emit('offer', data);
         console.log("Offer sent to specific receiver");
@@ -605,7 +613,7 @@ io.on("connection", (socket) => {
             console.error('Recipient user not found for SDP answer');
             return;
         }
-    
+
         console.log(`SDP answer received from ${socket.id} to ${caller}`);
         io.to(caller).emit('offer-answer', data);
         console.log("Answer sent to specific receiver");
@@ -614,7 +622,7 @@ io.on("connection", (socket) => {
     socket.on('ice-candidate', (data) => {
         console.log("User: ", data.to)
         const user = findSocketIdByUserId(clients, data.to);
-    
+
         console.log(`ICE candidate received from ${socket.id} to ${user}`);
         io.to(user).emit('ice-candidate', data);
         console.log("ICE candidate sent to specific receiver");
@@ -693,7 +701,7 @@ io.on("connection", (socket) => {
 });
 
 const makeUserOffline = (id) => {
-    const query =  `UPDATE Users SET status = ? WHERE user_id = ?`;
+    const query = `UPDATE Users SET status = ? WHERE user_id = ?`;
     const values = [0, id];
     connection.query(query, values, (err, results) => {
         if (err) {
@@ -751,7 +759,7 @@ const insertCallInDB = (caller, receiver, callType, roomId) => {
     const insertCallQuery = "INSERT INTO Calls (caller_id, receiver_id, call_type, start_time, call_room_id) VALUES (?, ?, ?, ?, ?)";
     const insertCallValue = [caller, receiver, callType, new Date(), roomId];
     connection.query(insertCallQuery, insertCallValue, (err, results) => {
-        if(err) {
+        if (err) {
             return connection.rollback(() => {
                 console.error("Error inserting in the call table", err);
             });
