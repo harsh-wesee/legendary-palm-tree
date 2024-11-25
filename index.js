@@ -3,6 +3,7 @@ var http = require("http");
 const path = require("path");
 const cors = require("cors");
 const app = express();
+require('dotenv').config();
 const port = process.env.port || 5000;
 var server = http.createServer(app);
 var io = require("socket.io")(server, {
@@ -18,8 +19,8 @@ const otpGen = require("otp-generator");
 let users = []
 
 
-var sid = "AC4284069662879f8fcc42508c207347d5";
-var auth_token = "b88f97c66a6ce6aa16777eca8f327338";
+var sid = process.env.SID;                
+var auth_token = process.env.AUTH_TOKEN;
 var twilio = require("twilio")(sid, auth_token);
 
 
